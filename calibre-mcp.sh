@@ -141,12 +141,22 @@ search_books() {
 search_books_fts() {
     local query="$1"
     local limit="${2:-50}"
+    local fuzzy_query="${3:-}"
     
-    # Run FTS search with timeout
+    # Process query for better results
+    # If query contains multiple words and no quotes, wrap in quotes for phrase search
+    local processed_query="$query"
+    if [[ "$query" =~ ^[^\"]*[[:space:]]+[^\"]*$ ]]; then
+        # Multiple words without quotes - make it a phrase search
+        processed_query="\"$query\""
+        log "Converting to phrase search: $processed_query"
+    fi
+    
+    # Run FTS search with timeout and exact word matching
     local fts_results
     local temp_file=$(mktemp)
     
-    if run_with_timeout 10 "$CALIBREDB" fts_search --library-path="$CALIBRE_LIBRARY" --output-format=json "$query" > "$temp_file" 2>&1; then
+    if run_with_timeout 10 "$CALIBREDB" fts_search --library-path="$CALIBRE_LIBRARY" --output-format=json --do-not-match-on-related-words "$processed_query" > "$temp_file" 2>&1; then
         fts_results=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
     else
         log "FTS search timed out or failed"
@@ -157,6 +167,24 @@ search_books_fts() {
     # Extract unique book IDs from FTS results
     local book_ids
     book_ids=$(echo "$fts_results" | jq -r '[.[].book_id] | unique | join(",")' 2>/dev/null || echo "")
+    
+    # If no results and fuzzy query provided, try fuzzy search
+    if [[ -z "$book_ids" ]] && [[ -n "$fuzzy_query" ]]; then
+        log "Exact search returned no results, trying fuzzy search: $fuzzy_query"
+        
+        # Run fuzzy search without exact matching and without phrase quotes
+        temp_file=$(mktemp)
+        if run_with_timeout 10 "$CALIBREDB" fts_search --library-path="$CALIBRE_LIBRARY" --output-format=json "$fuzzy_query" > "$temp_file" 2>&1; then
+            fts_results=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
+        else
+            log "Fuzzy FTS search timed out or failed"
+            fts_results="[]"
+        fi
+        rm -f "$temp_file"
+        
+        # Extract book IDs from fuzzy results
+        book_ids=$(echo "$fts_results" | jq -r '[.[].book_id] | unique | join(",")' 2>/dev/null || echo "")
+    fi
     
     if [[ -z "$book_ids" ]]; then
         echo "[]"
@@ -309,18 +337,22 @@ handle_tools_list() {
     tools=$(jq -cn '[
         {
             name: "search-fulltext",
-            description: "Search books using Calibre full-text search",
+            description: "Search books using Calibre full-text search. Multi-word queries are treated as phrases by default. Use quotes to control phrase matching.",
             inputSchema: {
                 type: "object",
                 properties: {
                     query: {
                         type: "string",
-                        description: "Search query (can use Calibre search syntax)"
+                        description: "Search query. Multi-word queries like machine learning are automatically phrase-searched. Use quotes for explicit phrases or + for AND logic."
                     },
                     limit: {
                         type: "integer",
                         description: "Maximum number of results (default: 50)",
                         default: 50
+                    },
+                    fuzzy_fallback: {
+                        type: "string",
+                        description: "Optional fuzzy search query used if exact search returns no results. Use multiple related terms like: AI artificial intelligence ML neural networks deep learning"
                     }
                 },
                 required: ["query"]
@@ -410,9 +442,10 @@ handle_tools_call() {
     
     case "$tool_name" in
         "search-fulltext")
-            local query limit
+            local query limit fuzzy_fallback
             query=$(echo "$arguments" | jq -r '.query // empty')
             limit=$(echo "$arguments" | jq -r '.limit // 50')
+            fuzzy_fallback=$(echo "$arguments" | jq -r '.fuzzy_fallback // empty')
             
             if [[ -z "$query" ]]; then
                 error_response "$id" -32602 "Missing required parameter: query"
@@ -421,7 +454,7 @@ handle_tools_call() {
             
             # Use FTS search
             local results
-            results=$(search_books_fts "$query" "$limit")
+            results=$(search_books_fts "$query" "$limit" "$fuzzy_fallback")
             success_response "$id" "{ \"books\": $results }"
             ;;
             
