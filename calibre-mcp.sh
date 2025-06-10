@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Configuration
-CALIBRE_LIBRARY="/Users/trieloff/Calibre Library"
+CALIBRE_LIBRARY="$HOME/Calibre Library"
 CALIBREDB="/Applications/calibre.app/Contents/MacOS/calibredb"
 LOG_FILE="requests.log"
 
