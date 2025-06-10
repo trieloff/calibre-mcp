@@ -55,14 +55,50 @@ success_response() {
     send_response "$response"
 }
 
+# Run command with timeout
+run_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+    local cmd=("$@")
+    
+    # Run command in background
+    "${cmd[@]}" &
+    local pid=$!
+    
+    # Wait for command or timeout
+    local count=0
+    while kill -0 $pid 2>/dev/null; do
+        if [[ $count -ge $timeout_seconds ]]; then
+            kill -TERM $pid 2>/dev/null
+            wait $pid 2>/dev/null
+            return 124  # timeout exit code
+        fi
+        sleep 1
+        ((count++))
+    done
+    
+    # Get exit status
+    wait $pid
+    return $?
+}
+
 # Search books using calibredb search
 search_books() {
     local query="$1"
     local limit="${2:-50}"
     
-    # Get book IDs from search
+    # Get book IDs from search with timeout
     local book_ids
-    book_ids=$("$CALIBREDB" search --library-path="$CALIBRE_LIBRARY" --limit="$limit" "$query" 2>/dev/null || echo "")
+    local temp_file=$(mktemp)
+    
+    # Run search command with timeout
+    if run_with_timeout 10 "$CALIBREDB" search --library-path="$CALIBRE_LIBRARY" --limit="$limit" "$query" > "$temp_file" 2>&1; then
+        book_ids=$(cat "$temp_file" | grep -v "Another calibre program" || echo "")
+    else
+        log "Search timed out or failed"
+        book_ids=""
+    fi
+    rm -f "$temp_file"
     
     if [[ -z "$book_ids" ]]; then
         echo "[]"
@@ -74,7 +110,15 @@ search_books() {
     
     # Get detailed metadata for found books
     local books_json
-    books_json=$("$CALIBREDB" list --library-path="$CALIBRE_LIBRARY" --fields=id,title,authors,series,tags,publisher,pubdate,formats,identifiers,comments --for-machine --search="$id_query" 2>/dev/null || echo "[]")
+    temp_file=$(mktemp)
+    
+    if run_with_timeout 10 "$CALIBREDB" list --library-path="$CALIBRE_LIBRARY" --fields=id,title,authors,series,tags,publisher,pubdate,formats,identifiers,comments --for-machine --search="$id_query" > "$temp_file" 2>&1; then
+        books_json=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
+    else
+        log "List timed out or failed"
+        books_json="[]"
+    fi
+    rm -f "$temp_file"
     
     # Process each book to add links and simplify format
     echo "$books_json" | jq '[.[] | {
@@ -87,7 +131,7 @@ search_books() {
         published: .pubdate,
         calibre_link: "calibre://show-book/Calibre_Library/\(.id)",
         formats: [.formats[] | split("/")[-1]],
-        has_text: (.formats[] | select(endswith(".txt"))) != null,
+        has_text: ([.formats[] | select(endswith(".txt"))] | length > 0),
         description: (.comments | if . then (. | gsub("<[^>]+>"; "") | split("\n")[0:2] | join(" ") | .[0:200] + "...") else null end)
     }]'
 }
@@ -100,7 +144,15 @@ get_book_excerpt() {
     
     # Get book metadata to find file path
     local book_json
-    book_json=$("$CALIBREDB" list --library-path="$CALIBRE_LIBRARY" --fields=id,title,authors,formats --for-machine --search="id:$book_id" 2>/dev/null || echo "[]")
+    local temp_file=$(mktemp)
+    
+    if run_with_timeout 10 "$CALIBREDB" list --library-path="$CALIBRE_LIBRARY" --fields=id,title,authors,formats --for-machine --search="id:$book_id" > "$temp_file" 2>&1; then
+        book_json=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
+    else
+        log "Get book metadata timed out or failed"
+        book_json="[]"
+    fi
+    rm -f "$temp_file"
     
     # Extract text file path
     local txt_path
