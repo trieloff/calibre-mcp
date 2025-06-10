@@ -136,6 +136,63 @@ search_books() {
     }]'
 }
 
+# Search books using calibredb fts_search (full-text search)
+search_books_fts() {
+    local query="$1"
+    local limit="${2:-50}"
+    
+    # Run FTS search with timeout
+    local fts_results
+    local temp_file=$(mktemp)
+    
+    if run_with_timeout 10 "$CALIBREDB" fts_search --library-path="$CALIBRE_LIBRARY" --output-format=json "$query" > "$temp_file" 2>&1; then
+        fts_results=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
+    else
+        log "FTS search timed out or failed"
+        fts_results="[]"
+    fi
+    rm -f "$temp_file"
+    
+    # Extract unique book IDs from FTS results
+    local book_ids
+    book_ids=$(echo "$fts_results" | jq -r '[.[].book_id] | unique | join(",")' 2>/dev/null || echo "")
+    
+    if [[ -z "$book_ids" ]]; then
+        echo "[]"
+        return
+    fi
+    
+    # Convert to search query and get full metadata
+    local id_query="id:${book_ids//,/ OR id:}"
+    
+    # Get detailed metadata for found books
+    local books_json
+    temp_file=$(mktemp)
+    
+    if run_with_timeout 10 "$CALIBREDB" list --library-path="$CALIBRE_LIBRARY" --fields=id,title,authors,series,tags,publisher,pubdate,formats,identifiers,comments --for-machine --search="$id_query" > "$temp_file" 2>&1; then
+        books_json=$(cat "$temp_file" | grep -v "Another calibre program" || echo "[]")
+    else
+        log "List timed out or failed"
+        books_json="[]"
+    fi
+    rm -f "$temp_file"
+    
+    # Process each book to add links and simplify format
+    echo "$books_json" | jq '[.[] | {
+        id: .id,
+        title: .title,
+        authors: .authors,
+        series: .series,
+        tags: .tags,
+        publisher: .publisher,
+        published: .pubdate,
+        calibre_link: "calibre://show-book/Calibre_Library/\(.id)",
+        formats: [.formats[] | split("/")[-1]],
+        has_text: ([.formats[] | select(endswith(".txt"))] | length > 0),
+        description: (.comments | if . then (. | gsub("<[^>]+>"; "") | split("\n")[0:2] | join(" ") | .[0:200] + "...") else null end)
+    }]'
+}
+
 # Get book excerpt using grep on markdown file
 get_book_excerpt() {
     local book_id="$1"
@@ -313,9 +370,9 @@ handle_tools_call() {
                 return
             fi
             
-            # Use FTS search if available, fallback to regular search
+            # Use FTS search
             local results
-            results=$(search_books "$query" "$limit")
+            results=$(search_books_fts "$query" "$limit")
             success_response "$id" "{ \"books\": $results }"
             ;;
             
