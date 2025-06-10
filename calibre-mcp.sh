@@ -130,6 +130,7 @@ search_books() {
         publisher: .publisher,
         published: .pubdate,
         calibre_link: "calibre://show-book/Calibre_Library/\(.id)",
+        epub_link: ((.formats[] | select(endswith(".epub"))) // null | if . then "file://" + . else null end),
         formats: [.formats[] | split("/")[-1]],
         has_text: ([.formats[] | select(endswith(".txt"))] | length > 0),
         description: (.comments | if . then (. | gsub("<[^>]+>"; "") | split("\n")[0:2] | join(" ") | .[0:200] + "...") else null end)
@@ -187,6 +188,7 @@ search_books_fts() {
         publisher: .publisher,
         published: .pubdate,
         calibre_link: "calibre://show-book/Calibre_Library/\(.id)",
+        epub_link: ((.formats[] | select(endswith(".epub"))) // null | if . then "file://" + . else null end),
         formats: [.formats[] | split("/")[-1]],
         has_text: ([.formats[] | select(endswith(".txt"))] | length > 0),
         description: (.comments | if . then (. | gsub("<[^>]+>"; "") | split("\n")[0:2] | join(" ") | .[0:200] + "...") else null end)
