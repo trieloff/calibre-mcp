@@ -197,7 +197,9 @@ search_books_fts() {
 get_book_excerpt() {
     local book_id="$1"
     local keyword="$2"
-    local context_lines="${3:-5}"
+    local context_lines="${3:-10}"
+    local max_results="${4:-10}"
+    local page="${5:-1}"
     
     # Get book metadata to find file path
     local book_json
@@ -226,23 +228,58 @@ get_book_excerpt() {
     authors=$(echo "$book_json" | jq -r '.[0].authors // "Unknown"')
     
     # Search for keyword with context
-    local excerpts
+    local all_excerpts temp_excerpts
+    temp_excerpts=$(mktemp)
+    
     if [[ -n "$keyword" ]]; then
-        # Use grep with context, limit results
-        excerpts=$(grep -i -C "$context_lines" "$keyword" "$txt_path" 2>/dev/null | head -200 || echo "")
+        # Use grep with context, split results by -- separator
+        grep -i -C "$context_lines" "$keyword" "$txt_path" 2>/dev/null > "$temp_excerpts" || echo ""
+        
+        # Count total matches (separated by --)
+        local total_matches
+        total_matches=$(grep -c "^--$" "$temp_excerpts" 2>/dev/null || echo "0")
+        ((total_matches++))  # Add 1 for the last match
+        
+        # Calculate pagination
+        local start_index end_index
+        start_index=$(( (page - 1) * max_results + 1 ))
+        end_index=$(( start_index + max_results - 1 ))
+        
+        # Extract specific page of results using awk
+        all_excerpts=$(awk -v RS="--" -v start="$start_index" -v end="$end_index" '
+            NR >= start && NR <= end { 
+                if (NR > start) printf "--\n"
+                printf "%s", $0 
+            }
+        ' "$temp_excerpts")
     else
         # If no keyword, get beginning of book
-        excerpts=$(head -50 "$txt_path" 2>/dev/null || echo "")
+        local start_line end_line
+        start_line=$(( (page - 1) * max_results * 20 + 1 ))
+        end_line=$(( start_line + max_results * 20 - 1 ))
+        all_excerpts=$(sed -n "${start_line},${end_line}p" "$txt_path" 2>/dev/null || echo "")
+        total_matches=1
     fi
     
-    # Create response
-    jq -cn --arg id "$book_id" --arg title "$title" --arg authors "$authors" --arg keyword "$keyword" --arg excerpts "$excerpts" --arg path "$txt_path" '{
+    rm -f "$temp_excerpts"
+    
+    # Create response with pagination info
+    jq -cn --arg id "$book_id" --arg title "$title" --arg authors "$authors" --arg keyword "$keyword" \
+           --arg excerpts "$all_excerpts" --arg path "$txt_path" \
+           --argjson page "$page" --argjson max_results "$max_results" \
+           --argjson total_matches "${total_matches:-0}" '{
         book_id: ($id | tonumber),
         title: $title,
         authors: $authors,
         keyword: $keyword,
         excerpts: $excerpts,
-        file_path: $path
+        file_path: $path,
+        pagination: {
+            page: $page,
+            max_results: $max_results,
+            total_matches: $total_matches,
+            total_pages: (($total_matches + $max_results - 1) / $max_results | floor)
+        }
     }'
 }
 
@@ -341,8 +378,18 @@ handle_tools_list() {
                     },
                     context_lines: {
                         type: "integer",
-                        description: "Number of context lines around matches (default: 5)",
-                        default: 5
+                        description: "Number of context lines around matches (default: 10)",
+                        default: 10
+                    },
+                    max_results: {
+                        type: "integer",
+                        description: "Maximum number of results to return (default: 10)",
+                        default: 10
+                    },
+                    page: {
+                        type: "integer",
+                        description: "Page number for pagination (default: 1)",
+                        default: 1
                     }
                 },
                 required: ["book_id"]
@@ -407,10 +454,12 @@ handle_tools_call() {
             ;;
             
         "get-excerpt")
-            local book_id keyword context_lines
+            local book_id keyword context_lines max_results page
             book_id=$(echo "$arguments" | jq -r '.book_id // empty')
             keyword=$(echo "$arguments" | jq -r '.keyword // empty')
-            context_lines=$(echo "$arguments" | jq -r '.context_lines // 5')
+            context_lines=$(echo "$arguments" | jq -r '.context_lines // 10')
+            max_results=$(echo "$arguments" | jq -r '.max_results // 10')
+            page=$(echo "$arguments" | jq -r '.page // 1')
             
             if [[ -z "$book_id" ]]; then
                 error_response "$id" -32602 "Missing required parameter: book_id"
@@ -418,7 +467,7 @@ handle_tools_call() {
             fi
             
             local result
-            result=$(get_book_excerpt "$book_id" "$keyword" "$context_lines")
+            result=$(get_book_excerpt "$book_id" "$keyword" "$context_lines" "$max_results" "$page")
             
             # Check if it's an error
             if echo "$result" | jq -e '.error' >/dev/null 2>&1; then
