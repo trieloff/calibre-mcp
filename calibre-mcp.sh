@@ -8,7 +8,7 @@ set -euo pipefail
 # Configuration
 CALIBRE_LIBRARY="$HOME/Calibre Library"
 CALIBREDB="/Applications/calibre.app/Contents/MacOS/calibredb"
-LOG_FILE="requests.log"
+LOG_FILE="/tmp/calibre-mcp-requests.log"
 
 # Ensure log file exists
 touch "$LOG_FILE"
@@ -268,7 +268,7 @@ get_book_excerpt() {
         # Count total matches (separated by --)
         local total_matches
         total_matches=$(grep -c "^--$" "$temp_excerpts" 2>/dev/null || echo "0")
-        ((total_matches++))  # Add 1 for the last match
+        total_matches=$((total_matches + 1))  # Add 1 for the last match
         
         # Calculate pagination
         local start_index end_index
@@ -455,7 +455,28 @@ handle_tools_call() {
             # Use FTS search
             local results
             results=$(search_books_fts "$query" "$limit" "$fuzzy_fallback")
-            success_response "$id" "{ \"books\": $results }"
+            
+            # Format as MCP content response
+            local count
+            count=$(echo "$results" | jq length)
+            local content_text
+            if [[ "$count" -gt 0 ]]; then
+                content_text="Found $count book(s) matching '$query':\n\n$(echo "$results" | jq -r '.[] | "• \(.title) by \(.authors)\n  ID: \(.id), Published: \(.published)\n  Formats: \(.formats | join(", "))\n  " + (if .description then "Description: \(.description)" else "" end) + "\n"')"
+            else
+                content_text="No books found matching '$query'"
+            fi
+            
+            local mcp_result
+            mcp_result=$(jq -cn --arg text "$content_text" --argjson books "$results" '{
+                content: [
+                    {
+                        type: "text",
+                        text: $text
+                    }
+                ],
+                books: $books
+            }')
+            success_response "$id" "$mcp_result"
             ;;
             
         "search-author")
@@ -470,7 +491,28 @@ handle_tools_call() {
             
             local results
             results=$(search_books "authors:\"$author\"" "$limit")
-            success_response "$id" "{ \"books\": $results }"
+            
+            # Format as MCP content response
+            local count
+            count=$(echo "$results" | jq length)
+            local content_text
+            if [[ "$count" -gt 0 ]]; then
+                content_text="Found $count book(s) by author '$author':\n\n$(echo "$results" | jq -r '.[] | "• \(.title) by \(.authors)\n  ID: \(.id), Published: \(.published)\n  Formats: \(.formats | join(", "))\n  " + (if .description then "Description: \(.description)" else "" end) + "\n"')"
+            else
+                content_text="No books found by author '$author'"
+            fi
+            
+            local mcp_result
+            mcp_result=$(jq -cn --arg text "$content_text" --argjson books "$results" '{
+                content: [
+                    {
+                        type: "text",
+                        text: $text
+                    }
+                ],
+                books: $books
+            }')
+            success_response "$id" "$mcp_result"
             ;;
             
         "search-title")
@@ -485,7 +527,28 @@ handle_tools_call() {
             
             local results
             results=$(search_books "title:\"$title\"" "$limit")
-            success_response "$id" "{ \"books\": $results }"
+            
+            # Format as MCP content response
+            local count
+            count=$(echo "$results" | jq length)
+            local content_text
+            if [[ "$count" -gt 0 ]]; then
+                content_text="Found $count book(s) with title '$title':\n\n$(echo "$results" | jq -r '.[] | "• \(.title) by \(.authors)\n  ID: \(.id), Published: \(.published)\n  Formats: \(.formats | join(", "))\n  " + (if .description then "Description: \(.description)" else "" end) + "\n"')"
+            else
+                content_text="No books found with title '$title'"
+            fi
+            
+            local mcp_result
+            mcp_result=$(jq -cn --arg text "$content_text" --argjson books "$results" '{
+                content: [
+                    {
+                        type: "text",
+                        text: $text
+                    }
+                ],
+                books: $books
+            }')
+            success_response "$id" "$mcp_result"
             ;;
             
         "get-excerpt")
@@ -508,7 +571,30 @@ handle_tools_call() {
             if echo "$result" | jq -e '.error' >/dev/null 2>&1; then
                 error_response "$id" -32603 "$(echo "$result" | jq -r '.error')"
             else
-                success_response "$id" "$result"
+                # Format as MCP content response
+                local title authors excerpts
+                title=$(echo "$result" | jq -r '.title // "Unknown"')
+                authors=$(echo "$result" | jq -r '.authors // "Unknown"')
+                excerpts=$(echo "$result" | jq -r '.excerpts // ""')
+                
+                local content_text
+                if [[ -n "$keyword" ]]; then
+                    content_text="Excerpts from '$title' by $authors containing '$keyword':\\n\\n$excerpts"
+                else
+                    content_text="Beginning of '$title' by $authors:\\n\\n$excerpts"
+                fi
+                
+                local mcp_result
+                mcp_result=$(jq -cn --arg text "$content_text" --argjson excerpt_data "$result" '{
+                    content: [
+                        {
+                            type: "text",
+                            text: $text
+                        }
+                    ],
+                    excerpt_data: $excerpt_data
+                }')
+                success_response "$id" "$mcp_result"
             fi
             ;;
             
