@@ -386,11 +386,11 @@ search_books_fulltext() {
     
     log "Found $(echo "$fts_results" | jq length) FTS results"
     
-    # Get unique book IDs 
+    # Get unique book IDs (limit to 3 books to avoid overwhelming)
     local unique_books
     unique_books=$(echo "$fts_results" | jq -r '[.[].book_id] | unique[0:3]')
     
-    # Get book metadata
+    # Get book metadata with full formats
     local book_ids_query
     book_ids_query=$(echo "$unique_books" | jq -r 'join(" OR id:")')
     local id_query="id:$book_ids_query"
@@ -407,23 +407,67 @@ search_books_fulltext() {
     
     log "Got metadata for $(echo "$books_json" | jq length) books"
     
-    # Create results
-    local results
-    results=$(echo "$unique_books" | jq --argjson books "$books_json" --arg query "$query" '[
-        .[] as $book_id |
-        ($books | map(select(.id == $book_id))[0]) as $book_info |
-        if $book_info then {
-            id: ($book_id | tostring),
-            title: $book_info.title,
-            authors: $book_info.authors,
-            text: ("Found \"" + $query + "\" in " + $book_info.title),
-            url: ("epub://" + ($book_info.authors | @uri) + "/" + ($book_info.title | @uri) + "@" + ($book_id | tostring)),
-            line_number: 1
-        } else empty end
-    ]')
+    # Now search for actual content in text files
+    local results_file=$(mktemp)
+    local match_count=0
     
-    log "Created $(echo "$results" | jq length) final results"
-    echo "$results"
+    # Process each book to find actual matches
+    while IFS= read -r book_data && [[ $match_count -lt $limit ]]; do
+        local book_id title authors
+        book_id=$(echo "$book_data" | jq -r '.id')
+        title=$(echo "$book_data" | jq -r '.title')
+        authors=$(echo "$book_data" | jq -r '.authors')
+        
+        # Get text file path
+        local txt_path
+        txt_path=$(echo "$book_data" | jq -r '.formats[]? | select(endswith(".txt"))' 2>/dev/null || echo "")
+        
+        if [[ -n "$txt_path" && -f "$txt_path" ]]; then
+            # Search for content matches in this book (up to 5 per book)
+            local book_matches=0
+            while IFS= read -r match_line && [[ $match_count -lt $limit ]] && [[ $book_matches -lt 5 ]]; do
+                if [[ -n "$match_line" ]]; then
+                    local line_num match_text
+                    line_num=$(echo "$match_line" | cut -d: -f1)
+                    match_text=$(echo "$match_line" | cut -d: -f2-)
+                    
+                    # Calculate broader context line range for URL (5 lines before/after)
+                    local context_start context_end
+                    context_start=$((line_num - 5))
+                    context_end=$((line_num + 5))
+                    if [[ $context_start -lt 1 ]]; then context_start=1; fi
+                    
+                    # Create epub URL with broader context range
+                    local epub_url
+                    epub_url=$(create_epub_url "$authors" "$title" "$book_id" "$context_start" "$context_end")
+                    
+                    # Output result with the matching line
+                    jq -cn --arg id "$book_id" --arg title "$title" --arg authors "$authors" \
+                          --arg text "$match_text" --arg url "$epub_url" --argjson line "$line_num" '{
+                        id: $id,
+                        title: $title,
+                        authors: $authors,
+                        text: $text,
+                        url: $url,
+                        line_number: $line
+                    }' >> "$results_file"
+                    
+                    ((match_count++))
+                    ((book_matches++))
+                fi
+            done < <(grep -i -n "$query" "$txt_path" 2>/dev/null | head -n 5)
+        fi
+    done < <(echo "$books_json" | jq -c '.[]')
+    
+    # Combine results
+    local final_results="[]"
+    if [[ -s "$results_file" ]]; then
+        final_results=$(jq -s '.' < "$results_file")
+    fi
+    
+    rm -f "$results_file"
+    log "Created $(echo "$final_results" | jq length) final results"
+    echo "$final_results"
 }
 
 # Unified search function
