@@ -610,7 +610,7 @@ handle_tools_list() {
     tools=$(jq -cn '[
         {
             name: "search",
-            description: "Search the Calibre ebook library. Supports both full-text content search (default) and metadata search using field syntax. Returns results with epub:// URLs for precise content access. WARNING: Full-text results include 3 paragraphs of context - use sparingly to avoid token overflow.",
+            description: "Search the Calibre ebook library. Supports both full-text content search (default) and metadata search using field syntax. Returns results with epub:// URLs for precise content access. Results are distributed across books using square root of limit (e.g., limit=25 returns up to 5 matches from 5 different books). WARNING: Full-text returns actual matching lines - set limit appropriately to manage tokens.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -620,7 +620,7 @@ handle_tools_list() {
                     },
                     limit: {
                         type: "integer",
-                        description: "Maximum number of results (default: 50). Keep low for full-text to manage tokens.",
+                        description: "Maximum number of results (default: 50). Uses square root distribution: sqrt(limit) books × sqrt(limit) matches per book. Examples: limit=9 returns 3 books×3 matches, limit=25 returns 5×5, limit=100 returns 10×10. Keep low for full-text to manage tokens.",
                         default: 50
                     },
                     fuzzy_fallback: {
