@@ -245,6 +245,10 @@ search_books_hybrid() {
     local results_file=$(mktemp)
     local match_count=0
     
+    # Calculate balanced limits for hybrid search too
+    local sqrt_limit
+    sqrt_limit=$(awk -v limit="$limit" 'BEGIN { print int(sqrt(limit) + 0.5) }')
+    
     # Process each filtered book
     while IFS= read -r book_data && [[ $match_count -lt $limit ]]; do
         local book_id title authors
@@ -257,9 +261,9 @@ search_books_hybrid() {
         txt_path=$(echo "$book_data" | jq -r '.full_formats[]? | select(endswith(".txt"))' 2>/dev/null || echo "")
         
         if [[ -n "$txt_path" && -f "$txt_path" ]]; then
-            # Search for content term matches in this specific book (up to 5 per book)
+            # Search for content term matches in this specific book (up to sqrt_limit per book)
             local book_matches=0
-            while IFS= read -r match_line && [[ $match_count -lt $limit ]] && [[ $book_matches -lt 5 ]]; do
+            while IFS= read -r match_line && [[ $match_count -lt $limit ]] && [[ $book_matches -lt $sqrt_limit ]]; do
                 if [[ -n "$match_line" ]]; then
                     local line_num match_text
                     line_num=$(echo "$match_line" | cut -d: -f1)
@@ -289,7 +293,7 @@ search_books_hybrid() {
                     ((match_count++))
                     ((book_matches++))
                 fi
-            done < <(grep -i -n "$content_terms" "$txt_path" 2>/dev/null | head -n 5)
+            done < <(grep -i -n "$content_terms" "$txt_path" 2>/dev/null | head -n "$sqrt_limit")
         fi
     done < <(echo "$filtered_books" | jq -c '.[]')
     
@@ -386,9 +390,13 @@ search_books_fulltext() {
     
     log "Found $(echo "$fts_results" | jq length) FTS results"
     
-    # Get unique book IDs (limit to 3 books to avoid overwhelming)
+    # Calculate balanced limits: sqrt of limit for both books and matches per book
+    local sqrt_limit
+    sqrt_limit=$(awk -v limit="$limit" 'BEGIN { print int(sqrt(limit) + 0.5) }')
+    
+    # Get unique book IDs (limit based on sqrt)
     local unique_books
-    unique_books=$(echo "$fts_results" | jq -r '[.[].book_id] | unique[0:3]')
+    unique_books=$(echo "$fts_results" | jq -r --argjson max "$sqrt_limit" '[.[].book_id] | unique[0:$max]')
     
     # Get book metadata with full formats
     local book_ids_query
@@ -427,9 +435,9 @@ search_books_fulltext() {
         txt_path=$(echo "$book_data" | jq -r '.formats[]? | select(endswith(".txt"))' 2>/dev/null || echo "")
         
         if [[ -n "$txt_path" && -f "$txt_path" ]]; then
-            # Search for content matches in this book (up to 5 per book)
+            # Search for content matches in this book (up to sqrt_limit per book)
             local book_matches=0
-            while IFS= read -r match_line && [[ $match_count -lt $limit ]] && [[ $book_matches -lt 5 ]]; do
+            while IFS= read -r match_line && [[ $match_count -lt $limit ]] && [[ $book_matches -lt $sqrt_limit ]]; do
                 if [[ -n "$match_line" ]]; then
                     local line_num match_text
                     line_num=$(echo "$match_line" | cut -d: -f1)
@@ -459,7 +467,7 @@ search_books_fulltext() {
                     ((match_count++))
                     ((book_matches++))
                 fi
-            done < <(grep -E -i -n "$grep_pattern" "$txt_path" 2>/dev/null | head -n 5)
+            done < <(grep -E -i -n "$grep_pattern" "$txt_path" 2>/dev/null | head -n "$sqrt_limit")
         fi
     done < <(echo "$books_json" | jq -c '.[]')
     
