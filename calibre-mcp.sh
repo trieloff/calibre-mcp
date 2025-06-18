@@ -411,6 +411,10 @@ search_books_fulltext() {
     local results_file=$(mktemp)
     local match_count=0
     
+    # Convert space-separated query into regex pattern for OR matching
+    local grep_pattern
+    grep_pattern=$(echo "$query" | sed 's/ /|/g')
+    
     # Process each book to find actual matches
     while IFS= read -r book_data && [[ $match_count -lt $limit ]]; do
         local book_id title authors
@@ -455,7 +459,7 @@ search_books_fulltext() {
                     ((match_count++))
                     ((book_matches++))
                 fi
-            done < <(grep -i -n "$query" "$txt_path" 2>/dev/null | head -n 5)
+            done < <(grep -E -i -n "$grep_pattern" "$txt_path" 2>/dev/null | head -n 5)
         fi
     done < <(echo "$books_json" | jq -c '.[]')
     
